@@ -1,0 +1,2 @@
+#!/bin/bash
+cd ~/Dokumenty/jarvis && exec python3 kibelek-tui.py "$@"

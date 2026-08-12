@@ -1,0 +1,15 @@
+# Modele i próbki głosu — gigabajty, nie wchodzą do historii
+old/
+models/
+voices/
+piper/
+
+# Śmieci wykonawcze
+__pycache__/
+*.pyc
+*.log
+
+# Kopie zapasowe robione ręcznie przed edycją
+*.bak
+*.bak-*
+*.backup-*

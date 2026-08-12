@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# jarvis — sterowanie głosem. Kill-switch bez babrania w settings.json.
+#   jarvis off      -> zamilcz (hook przestaje gadać)
+#   jarvis on       -> odblokuj
+#   jarvis status   -> czy gada
+#   jarvis say TEKST -> powiedz raz (test)
+set -euo pipefail
+JV="$HOME/Dokumenty/jarvis"
+CFG="$HOME/.config/jarvis"
+MUTE="$CFG/mute"
+mkdir -p "$CFG"
+
+case "${1:-status}" in
+  off|mute)   touch "$MUTE"; echo "🔇 jarvis zamilkł (rm $MUTE żeby wrócił, albo: jarvis on)";;
+  on|unmute)  rm -f "$MUTE"; echo "🔊 jarvis mówi";;
+  status)     [ -f "$MUTE" ] && echo "🔇 wyciszony" || echo "🔊 mówi";;
+  say)        shift; "$JV/jarvis-say.sh" "$@";;
+  *)          echo "użycie: jarvis {on|off|status|say TEKST}"; exit 1;;
+esac

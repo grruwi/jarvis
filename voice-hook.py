@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""voice-hook.py — Stop hook: mówi moją ostatnią odpowiedź przez kibelek (trasa voice).
+
+Odpala go harness na zdarzeniu Stop (koniec mojej tury). NIE tura modelu — lokalny skrypt:
+czyta transkrypt, wyłuskuje ostatnią prozę, strzela kib-send. Zero tokenów modelu.
+
+FILTR NIE JEST TUTAJ — siedzi globalnie w silniku tts-f5.py (czyści KAŻDY tekst do F5,
+nie tylko z hooka). Hook wysyła tekst surowy.
+
+Guard: gada TYLKO gdy istnieje plik-flaga ~/.config/jarvis/voice.on.
+"""
+import os, sys, json, time, subprocess
+
+FLAG = os.path.expanduser("~/.config/jarvis/voice.on")
+KIB  = os.path.expanduser("~/Dokumenty/jarvis/kib-send.py")
+
+SETTLE_TRIES = 8
+SETTLE_GAP   = 0.15
+
+
+def main():
+    if not os.path.exists(FLAG):
+        return
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return
+    tp = payload.get("transcript_path")
+    if not tp or not os.path.exists(tp):
+        return
+    text = None
+    for _ in range(SETTLE_TRIES):
+        cand, settled = final_text(tp)
+        if settled and cand:
+            text = cand
+            break
+        time.sleep(SETTLE_GAP)
+    if not text:
+        return
+    try:
+        subprocess.run(["python3", KIB, "--from", "claude", "--to", "voice",
+                        "--engine", "f5", text], timeout=300)
+    except Exception:
+        pass
+
+
+def final_text(path):
+    """(tekst, settled): settled=True gdy ostatnia wypowiedź-z-tekstem jest FINALNA (po niej
+    brak tool_use) — zabija wyścig ze zrzutem transkryptu i podwójne odpalenie."""
+    msgs = []
+    with open(path, encoding="utf-8") as f:
+        for ln in f:
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                o = json.loads(ln)
+            except Exception:
+                continue
+            if o.get("type") != "assistant":
+                continue
+            msg = o.get("message", {})
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", [])
+            txt = "".join(b.get("text", "") for b in content
+                          if isinstance(b, dict) and b.get("type") == "text").strip()
+            has_tool = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content)
+            msgs.append((txt, has_tool))
+    last_i = None
+    for i, (txt, _) in enumerate(msgs):
+        if txt:
+            last_i = i
+    if last_i is None:
+        return (None, False)
+    settled = not any(has for (_, has) in msgs[last_i + 1:])
+    return (msgs[last_i][0], settled)
+
+
+if __name__ == "__main__":
+    main()
