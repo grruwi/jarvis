@@ -9,10 +9,15 @@ accept() blokuje aż ktoś wrzuci wiadomość — zero pollingu.
 Wiadomość (jedna linia JSON):
     {"from": nadawca, "to": adresat|[adresaci], "type": rodzaj, "payload": treść}
 
+⚠️ TEN KIBELEK TO GŁOS grruwiego (dyktafon.sh pisze tędy do Klodzia). Ma być MAŁY i NUDNY.
+Wszystko ruchome — czat Twitcha, kolejka TTS, punkty widzów, Gienia streamowa — mieszka
+w OSOBNYM dispatcherze streamowym. Zator albo wyciek w tamtym kodzie nie ma prawa położyć
+mikrofonu grruwiego (decyzja 2026-08-12).
+
 Adresaci (routing po `to`):
-    voice   -> mówi przez tts-worker; głos wybierany po `from` (klodzio/gienia)
+    voice   -> mówi przez tts-worker; głos wybierany po `from`
     klodzio -> wpycha tekst do mojego terminala (alias: claude) + Enter (tmux send-keys; fallback: inbox-plik)
-    gienia  -> pyta Gemmę (LM Studio API); jej odpowiedź-JSON wraca do kibelka
+    clonker -> to samo, inny mózg (Haiku) i własny wpis w adresowniku
     log     -> tylko zapis do stderr (podgląd)
 
 `to` może być stringiem albo listą — rozgłasza do każdego (np. ["voice","klodzio"]).
@@ -24,11 +29,34 @@ SOCK  = os.path.join(CFG, "kibelek.sock")
 TTS   = os.path.join(CFG, "tts.sock")                 # gniazdo tts-workera
 INBOX = os.path.join(CFG, "klodzio-inbox.log")         # fallback gdy kanał leży (NIKT nie tailuje)
 FEED  = os.path.join(CFG, "kibelek-feed.jsonl")       # podgląd dla okienka (TYLKO ludzkie oczy)
+PRAWA = os.path.join(CFG, "kibelek-prawa.json")       # kto może do kogo (patrz: BRAMKA)
 os.makedirs(CFG, exist_ok=True)
 
-# Gienia = ŻYWA sesja ccr Claude Code w Konsoli (widoczna, z pamięcią). Dispatcher wstrzykuje
-# jej zadania celując po session-ID (qdbus sendText) — niezależnie od fokusu. Ona odpowiada we
-# własnym CLI i sięga kibelka własnym shellem (kib-send). Adres bierze z adresownika (patrz niżej).
+# ── BRAMKA: kto ma prawo kogo zawołać ───────────────────────────────────────
+# Powód: `dispatch()` wykonywał pole `to` z koperty BEZ pytania, kto wysyła. Dopóki do
+# gniazda sięgały tylko procesy grruwiego, to nic nie znaczyło. W dniu, w którym most
+# z Twitcha wystartuje na tej samej maszynie, "to":"klodzio" wpisane w kopertę byłoby
+# przepustką do promptu Klodzia. Bramka istnieje po to, żeby czat nie miał tam wstępu.
+#
+# ⚠️ ZAPAS WBUDOWANY, nie fail-closed. Gdyby plik z prawami zniknął albo się zepsuł,
+# szczelny tryb "wszystko do logu" ODCIĄŁBY GŁOS grruwiego — dyktafon pisze kibelkiem.
+# Dlatego brak pliku = ta lista poniżej + krzyk w logu. Obcy i tak nie przejdą, bo
+# nie ma ich na żadnej liście; domyślny poziom to `obcy`.
+PRAWA_ZAPAS = {
+    "poziomy": {"grruwi": "wlasny", "karol": "wlasny", "voice": "wlasny",
+                "whisper": "wlasny", "klodzio": "wlasny", "claude": "wlasny",
+                "clonker": "wlasny"},
+    "domyslny_poziom": "obcy",
+    "wolno": {"wlasny": ["klodzio", "claude", "clonker", "voice", "log"],
+              "obcy":   ["log"]},
+    "gdy_nie_wolno": "log",
+}
+
+# ⛔ GIENIA WYCIĘTA Z TEGO DISPATCHERA 2026-08-12 — ani jako adresat, ani jako nadawca.
+# Powód nie jest kosmetyczny: ona czyta czat Twitcha, czyli treść niezaufaną. Droga od niej
+# do Klodzia ma być ZAPROJEKTOWANA (prośba z zamkniętej listy czasowników, nie zdanie do
+# przeczytania), a nie odziedziczona po starym kodzie. Kod jej trasy leży w gicie (d2af940)
+# i w ~/backup-jarvis/ — przenosi się go do dispatchera streamowego, nie pisze od nowa.
 #
 # ADRESOWNIK: term-<nazwa>.json, dwa rodzaje wpisu:
 #   {"kind":"tmux","pane":"%7",...}                       <- jarvis-tmux.sh (preferowany)
@@ -44,7 +72,7 @@ POWLOKI = {"bash", "sh", "zsh", "fish", "dash"}
 # Zapasowy silnik głosu. DOMYŚLNY JĘZYK TO POLSKI — angielski trzeba wskazać jawnie
 # (`"lang":"en"` w wiadomości), nie odwrotnie.
 VOICEBOX_URL   = os.environ.get("VOICEBOX_URL", "http://127.0.0.1:17493")
-VOICEBOX_GLOSY = {"klodzio": "fronczek", "claude": "fronczek", "gienia": "fronczek"}
+VOICEBOX_GLOSY = {"klodzio": "fronczek", "claude": "fronczek"}
 
 def log(*a): print("[dispatcher]", *a, file=sys.stderr, flush=True)
 
@@ -67,7 +95,7 @@ def feed_tap(msg, resp):
 
 # ── trasa: GŁOS ─────────────────────────────────────────────────────────────
 def route_voice(msg):
-    """Mówi treść przez rezydentnego tts-workera. from=speaker (claude/gienia).
+    """Mówi treść przez rezydentnego tts-workera. from=speaker (klodzio/claude).
     Gdy workera F5 nie ma — spada na Voicebox (Fronczek), żeby cisza nie była
     domyślną odpowiedzią kanału."""
     if not os.path.exists(TTS):
@@ -140,19 +168,6 @@ def route_clonker(msg):
         if r:
             return r
     return "err clonker niezarejestrowany/martwy (brak term-clonker.json — odpal go i zarejestruj)"
-
-
-def route_gienia(msg, emit):
-    """Wstrzykuje zadanie do żywej sesji Gieni (ccr Claude Code w Konsoli) — celowanie
-    Konsole-DBus po session-ID, bez fokusu. Jej odpowiedź, pamięć i widoczność żyją w JEJ CLI;
-    do kibelka sięga sama (kib-send). Wymaga rejestracji term-gienia.json (pisze ją
-    gienia-launch.sh na starcie)."""
-    text = _text_adresowany(msg, "gienia")
-    for probuj in (_tmux_send, _konsole_send):
-        r = probuj("gienia", text)
-        if r:
-            return r
-    return "err Gienia niezarejestrowana/martwa (brak term-gienia.json — odpal ją na nowo)"
 
 
 # ── pomocnicze ──────────────────────────────────────────────────────────────
@@ -274,17 +289,54 @@ def _konsole_send(name, text):
 ROUTES = {"voice": route_voice, "klodzio": route_klodzio, "claude": route_klodzio,
           "clonker": route_clonker}
 
-def dispatch(msg, emit):
-    """Rozgłasza wiadomość do adresata(-ów) z pola `to`."""
+def _prawa():
+    """Czyta prawa z dysku przy KAŻDEJ wiadomości — nowa osoba to wiersz w JSON-ie,
+    bez restartu usługi. Plik nieczytelny → zapas wbudowany + krzyk (patrz PRAWA_ZAPAS)."""
+    try:
+        with open(PRAWA) as f:
+            return json.load(f)
+    except Exception as e:
+        log(f"⚠️ prawa nieczytelne ({PRAWA}): {e!r} — jadę na zapasie wbudowanym")
+        return PRAWA_ZAPAS
+
+
+def poziom_nadawcy(frm, prawa, poziom_kanalu=None):
+    """`wlasny` / `znany` / `obcy`.
+
+    ⭐ `poziom_kanalu` BIJE deklarację z koperty. Pole `from` wpisuje sobie nadawca sam
+    (`kib-send.py --from cokolwiek`), więc jako podstawa uprawnień jest bezwartościowe —
+    to wygoda podpisu, nie dowód tożsamości. Poziom prawdziwy przychodzi z KANAŁU:
+    osobne gniazdo dla obcych albo UID drugiej strony (SO_PEERCRED). Dopóki takiego
+    kanału nie ma, czytamy deklarację — ale ta ścieżka jest tymczasowa, nie docelowa."""
+    if poziom_kanalu:
+        return poziom_kanalu
+    return prawa.get("poziomy", {}).get(str(frm).strip().lower(),
+                                        prawa.get("domyslny_poziom", "obcy"))
+
+
+def dispatch(msg, emit, poziom_kanalu=None):
+    """Rozgłasza wiadomość do adresata(-ów) z pola `to` — po sprawdzeniu bramki."""
     feed_tap(msg, "")     # NATYCHMIAST — człowiek widzi wiadomość ZANIM ją wypowiem
                           # (route_voice blokuje aż tts skończy mówić; tap na końcu = feed po mowie)
+    prawa = _prawa()
+    frm   = str(msg.get("from", "?"))
+    poz   = poziom_nadawcy(frm, prawa, poziom_kanalu)
+    wolno = prawa.get("wolno", {}).get(poz, ["log"])
+    spad  = prawa.get("gdy_nie_wolno", "log")
+
     tos = msg.get("to", "log")
     if isinstance(tos, str): tos = [tos]
     results = []
     for to in tos:
-        if to == "gienia":
-            results.append(route_gienia(msg, emit))
-        elif to in ROUTES:
+        if to not in wolno:
+            # NIE odrzucamy w próżnię: wiadomość spada do logu, czyli dalej żyje w kibelku
+            # i ludzie ją widzą. Zablokowany jest tylko DOSTĘP do bytu, nie sama rozmowa.
+            log(f"⛔ BRAMKA: {frm} ({poz}) -> {to} — nie wolno, spada do {spad}")
+            results.append(f"odmowa {to} (poziom {poz}) -> {spad}")
+            to = spad
+            if to == "log":
+                continue
+        if to in ROUTES:
             results.append(ROUTES[to](msg))
         elif to == "log":
             results.append("log")
@@ -303,8 +355,10 @@ def serve():
     log(f"kibelek słucha na {SOCK} — jedyny czytelnik, PUSH-only")
 
     def emit(sub):
-        """Re-wrzucenie wiadomości do kibelka (np. odpowiedź Gieni) — w osobnym wątku,
-        żeby nie zablokować bieżącej obsługi."""
+        """Re-wrzucenie wiadomości do kibelka w osobnym wątku, żeby nie blokować bieżącej
+        obsługi. ⚠️ NIKT tego dziś nie woła — jedynym użytkownikiem była trasa Gieni,
+        wycięta 12.08. Zostaje, bo dispatcher streamowy stoi na tym samym szkielecie
+        i tam re-wrzutka (odpowiedź modelu wracająca na kibelek) jest potrzebna."""
         threading.Thread(target=dispatch, args=(sub, emit), daemon=True).start()
 
     while True:
