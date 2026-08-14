@@ -100,7 +100,7 @@ def route_voice(msg):
     domyślną odpowiedzią kanału."""
     if not os.path.exists(TTS):
         r = _voicebox_speak(_text(msg), msg.get("from", "klodzio"), msg.get("lang", "pl"))
-        return r or "err tts-worker nie działa (brak tts.sock), Voicebox też nie odebrał"
+        return r or "cisza — kontener voicebox-slim nie chodzi (Docker zamknięty albo kontener stoi)"
     req = {
         "from":   msg.get("from", "klodzio"),
         "text":   _text(msg),
@@ -116,13 +116,34 @@ def route_voice(msg):
         return f"err voice: {e}"
 
 
+def _kontener_zyje():
+    """Czy KONTENER voicebox-slim chodzi. Zwraca True/False.
+
+    ⛔ 2026-08-14, polecenie grruwiego: na 17493 potrafią stać DWA różne Voiceboxy —
+    kontener i natywna appka (`voicebox-native.sh`). Kanał ma prawo obudzić WYŁĄCZNIE
+    kontener. Zamknięty Docker = cisza, bez wyjątków: karta bywa zajęta LLM-em albo grą,
+    a ktoś z kibelka (Karol) nie ma jak wiedzieć, co akurat na niej leży.
+    Dlatego sprawdzamy KTO stoi, zanim w ogóle zapukamy w port."""
+    try:
+        p = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", "voicebox-slim"],
+            capture_output=True, text=True, timeout=5)
+        return p.stdout.strip() == "true"
+    except Exception as e:
+        log("nie wiem czy kontener żyje:", repr(e))
+        return False
+
+
 def _voicebox_speak(text, mowca, lang="pl"):
-    """Zapasowy silnik głosu: natywny Voicebox na 17493. Zwraca opis albo None.
+    """Zapasowy silnik głosu: Voicebox na 17493. Zwraca opis albo None.
 
     `language` podajemy JAWNIE, bo binarka backendu czyta pominięte pole jako "en"
     i wypowiada polski tekst angielską fonetyką (łatka w źródłach jest, ale wejdzie
     dopiero po przebudowie sidecara). Nie czekamy na dźwięk — /speak oddaje sterowanie
     od razu, więc kibelek się nie zatyka na czas mówienia."""
+    if not _kontener_zyje():
+        log("kontener voicebox-slim nie chodzi — MILCZĘ, nie pukam w 17493")
+        return None
     profil = VOICEBOX_GLOSY.get(mowca, VOICEBOX_GLOSY["klodzio"])
     try:
         req = urllib.request.Request(
