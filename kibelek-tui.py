@@ -392,6 +392,33 @@ def rows_from_msgs(msgs, width):
         # (kto → do kogo). Odstępy byly proteza na czas, gdy nazwy sie zlewaly z trescia.
     return out
 
+# --- skok o całe słowo (Ctrl+←/→), semantyka jak w readline/bashu ---
+# Kody klawiszy zależą od terminfo, więc oprócz typowych wartości liczbowych
+# rozpoznajemy je po NAZWIE (kLFT5 = Ctrl+←, kLFT3 = Alt+←). keyname bywa
+# rzucane wyjątkiem dla nieznanych kodów, stąd try.
+CTRL_LEFT  = {545, 546, 543}    # Ctrl+←, Ctrl+Shift+←, Alt+←
+CTRL_RIGHT = {560, 561, 558}    # Ctrl+→, Ctrl+Shift+→, Alt+→
+
+def _nazwa_klawisza(ch):
+    if not isinstance(ch, int):
+        return ""
+    try:
+        return curses.keyname(ch).decode("ascii", "replace")
+    except Exception:
+        return ""
+
+def skok_w_lewo(s, i):
+    while i > 0 and not s[i-1].isalnum(): i -= 1      # przeskocz spacje/znaki
+    while i > 0 and s[i-1].isalnum():     i -= 1      # przeskocz samo słowo
+    return i
+
+def skok_w_prawo(s, i):
+    n = len(s)
+    while i < n and not s[i].isalnum(): i += 1
+    while i < n and s[i].isalnum():     i += 1
+    return i
+
+
 def main(stdscr):
     curses.curs_set(1); curses.use_default_colors()
     curses.init_pair(1, curses.COLOR_GREEN,   -1)
@@ -517,12 +544,25 @@ def main(stdscr):
                 if hidx >= len(history): hidx = None; buf = draft
                 else:                    buf = history[hidx]
                 cur = len(buf)
+        elif ch in CTRL_LEFT or _nazwa_klawisza(ch) in ("kLFT5", "kLFT3"):
+            cur = skok_w_lewo(buf, cur)               # Ctrl+← = słowo wstecz
+        elif ch in CTRL_RIGHT or _nazwa_klawisza(ch) in ("kRIT5", "kRIT3"):
+            cur = skok_w_prawo(buf, cur)              # Ctrl+→ = słowo w przód
         elif ch == curses.KEY_LEFT:  cur = max(0, cur - 1)
         elif ch == curses.KEY_RIGHT: cur = min(len(buf), cur + 1)
         elif ch == curses.KEY_HOME:  cur = 0
         elif ch == curses.KEY_END:   cur = len(buf)
-        elif ch in (curses.KEY_BACKSPACE, "\x7f", "\b"):
+        elif ch in ("\x08", "\x17"):          # Ctrl+Backspace / Ctrl+W = zjedz słowo
+            # Zwykły Backspace to \x7f (terminfo kbs), więc \x08 (Ctrl+H) jest
+            # wolne i tam siada Ctrl+Backspace. Ctrl+W dołożone, bo działa
+            # wszędzie — nawet gdy terminal nie odróżnia Ctrl+Backspace.
+            if cur > 0:
+                i = skok_w_lewo(buf, cur)
+                buf = buf[:i] + buf[cur:]; cur = i
+        elif ch in (curses.KEY_BACKSPACE, "\x7f"):
             if cur > 0: buf = buf[:cur-1] + buf[cur:]; cur -= 1
+        elif _nazwa_klawisza(ch) in ("kDC5", "kDC3"):   # Ctrl+Del = słowo w przód
+            j = skok_w_prawo(buf, cur); buf = buf[:cur] + buf[j:]
         elif ch == curses.KEY_DC:             # Delete = usuń pod kursorem
             if cur < len(buf): buf = buf[:cur] + buf[cur+1:]
         elif ch in ("\n", "\r"):              # Enter — wyślij
