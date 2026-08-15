@@ -71,8 +71,8 @@ POWLOKI = {"bash", "sh", "zsh", "fish", "dash"}
 
 # Zapasowy silnik głosu. DOMYŚLNY JĘZYK TO POLSKI — angielski trzeba wskazać jawnie
 # (`"lang":"en"` w wiadomości), nie odwrotnie.
-VOICEBOX_URL   = os.environ.get("VOICEBOX_URL", "http://127.0.0.1:17493")
-VOICEBOX_GLOSY = {"klodzio": "fronczek", "claude": "fronczek"}
+VOICEBOX_URL   = os.environ.get("VOICEBOX_URL", "http://127.0.0.1:17494")
+VOICEBOX_GLOSY = {"klodzio": "kleks-VoxCPM2", "claude": "kleks-VoxCPM2"}
 
 def log(*a): print("[dispatcher]", *a, file=sys.stderr, flush=True)
 
@@ -142,7 +142,7 @@ def _voicebox_speak(text, mowca, lang="pl"):
     dopiero po przebudowie sidecara). Nie czekamy na dźwięk — /speak oddaje sterowanie
     od razu, więc kibelek się nie zatyka na czas mówienia."""
     if not _kontener_zyje():
-        log("kontener voicebox-slim nie chodzi — MILCZĘ, nie pukam w 17493")
+        log("kontener voicebox-slim nie chodzi — MILCZĘ, nie pukam w 17494")
         return None
     profil = VOICEBOX_GLOSY.get(mowca, VOICEBOX_GLOSY["klodzio"])
     try:
