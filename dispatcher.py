@@ -47,7 +47,7 @@ PRAWA_ZAPAS = {
                 "whisper": "wlasny", "klodzio": "wlasny", "claude": "wlasny",
                 "clonker": "wlasny"},
     "domyslny_poziom": "obcy",
-    "wolno": {"wlasny": ["klodzio", "claude", "clonker", "voice", "log"],
+    "wolno": {"wlasny": ["klodzio", "claude", "clonker", "gieniara", "voice", "log"],
               "obcy":   ["log"]},
     "gdy_nie_wolno": "log",
 }
@@ -72,7 +72,7 @@ POWLOKI = {"bash", "sh", "zsh", "fish", "dash"}
 # Zapasowy silnik głosu. DOMYŚLNY JĘZYK TO POLSKI — angielski trzeba wskazać jawnie
 # (`"lang":"en"` w wiadomości), nie odwrotnie.
 VOICEBOX_URL   = os.environ.get("VOICEBOX_URL", "http://127.0.0.1:17494")
-VOICEBOX_GLOSY = {"klodzio": "kleks-VoxCPM2", "claude": "kleks-VoxCPM2"}
+VOICEBOX_GLOSY = {"klodzio": "glosik 3.0", "claude": "glosik 3.0"}
 
 def log(*a): print("[dispatcher]", *a, file=sys.stderr, flush=True)
 
@@ -100,7 +100,7 @@ def route_voice(msg):
     domyślną odpowiedzią kanału."""
     if not os.path.exists(TTS):
         r = _voicebox_speak(_text(msg), msg.get("from", "klodzio"), msg.get("lang", "pl"))
-        return r or "cisza — kontener voicebox-slim nie chodzi (Docker zamknięty albo kontener stoi)"
+        return r or "cisza — voicebox nie stoi (odpal `voicebox up`)"
     req = {
         "from":   msg.get("from", "klodzio"),
         "text":   _text(msg),
@@ -116,21 +116,23 @@ def route_voice(msg):
         return f"err voice: {e}"
 
 
-def _kontener_zyje():
-    """Czy KONTENER voicebox-slim chodzi. Zwraca True/False.
+def _voicebox_zyje():
+    """Czy Voicebox JUŻ stoi. Zwraca True/False.
 
-    ⛔ 2026-08-14, polecenie grruwiego: na 17493 potrafią stać DWA różne Voiceboxy —
-    kontener i natywna appka (`voicebox-native.sh`). Kanał ma prawo obudzić WYŁĄCZNIE
-    kontener. Zamknięty Docker = cisza, bez wyjątków: karta bywa zajęta LLM-em albo grą,
-    a ktoś z kibelka (Karol) nie ma jak wiedzieć, co akurat na niej leży.
-    Dlatego sprawdzamy KTO stoi, zanim w ogóle zapukamy w port."""
+    ⛔ ZASADA (2026-08-14, polecenie grruwiego) BEZ ZMIAN: kanał NIE MA PRAWA
+    niczego budzić. Karta bywa zajęta LLM-em albo grą, a ktoś z kibelka (Karol)
+    nie ma jak wiedzieć, co na niej akurat leży. Milczenie jest domyślne.
+
+    ⚠️ 2026-08-20 zmienił się tylko CEL sprawdzenia, nie zasada. Stara wersja pytała
+    `docker inspect voicebox-slim` — a kontenera nie ma od przejścia na natywny ggml,
+    więc bramka odcinała WSZYSTKO (log: "MILCZĘ, nie pukam w 17494" przy każdym @voice).
+    Teraz pytamy żywy backend: odpowiada na /health = ktoś go świadomie podniósł
+    (`voicebox up`), więc wolno mówić. Nie odpowiada = cisza, dokładnie jak dotąd."""
     try:
-        p = subprocess.run(
-            ["docker", "inspect", "-f", "{{.State.Running}}", "voicebox-slim"],
-            capture_output=True, text=True, timeout=5)
-        return p.stdout.strip() == "true"
+        with urllib.request.urlopen(f"{VOICEBOX_URL}/health", timeout=3) as r:
+            return json.load(r).get("status") == "healthy"
     except Exception as e:
-        log("nie wiem czy kontener żyje:", repr(e))
+        log("voicebox nie odpowiada na /health:", repr(e))
         return False
 
 
@@ -141,8 +143,8 @@ def _voicebox_speak(text, mowca, lang="pl"):
     i wypowiada polski tekst angielską fonetyką (łatka w źródłach jest, ale wejdzie
     dopiero po przebudowie sidecara). Nie czekamy na dźwięk — /speak oddaje sterowanie
     od razu, więc kibelek się nie zatyka na czas mówienia."""
-    if not _kontener_zyje():
-        log("kontener voicebox-slim nie chodzi — MILCZĘ, nie pukam w 17494")
+    if not _voicebox_zyje():
+        log("voicebox nie stoi — MILCZĘ, nie budzę karty (odpal `voicebox up`)")
         return None
     profil = VOICEBOX_GLOSY.get(mowca, VOICEBOX_GLOSY["klodzio"])
     try:
@@ -189,6 +191,26 @@ def route_clonker(msg):
         if r:
             return r
     return "err clonker niezarejestrowany/martwy (brak term-clonker.json — odpal go i zarejestruj)"
+
+
+def route_gieniara(msg):
+    """Gienia STREAMOWA — glos grruwiego leci prosto w jej prompt (Scroll Lock).
+    ⚠️ JEDNOKIERUNKOWO: jest adresatem, NIE jest nadawca. Wyciecie z 2026-08-12
+    dotyczylo drogi OD niej (czyta czat Twitcha = tresc niezaufana) i zostaje w mocy.
+    Adresownik: term-gienia-stream.json, zaklada go `gienia-stream-launch.sh`."""
+    text = _text_adresowany(msg, "gieniara")
+    # 02.09: NAJPIERW streamowa, POTEM zwykla, na koncu polowanie po nazwie okna.
+    # Powod (grruwi): "czasem mi sie zapomina o nim" — bez launchera `gieniara` tekst
+    # przepadal z komunikatem "niezarejestrowana", mimo ze zywa `gienia` stala obok.
+    for nazwa in ("gienia-stream", "gienia"):
+        for probuj in (_tmux_send, _konsole_send):
+            r = probuj(nazwa, text)
+            if r:
+                return r
+    r = _tmux_poluj(("gienia", "gieniara"), text)
+    if r:
+        return r
+    return "err Gienia nieosiagalna — ani gienia-stream, ani gienia, ani zaden panel tmuxa z 'gienia' w nazwie"
 
 
 # ── pomocnicze ──────────────────────────────────────────────────────────────
@@ -269,6 +291,48 @@ def _tmux_send(name, text):
         return None
 
 
+def _tmux_poluj(wzorce, text):
+    """Ostatnia deska: adresownik nieaktualny albo nigdy nie powstal, wiec szukamy
+    panelu po NAZWIE sesji/okna. Bierzemy pierwszy pasujacy, w ktorym NIE siedzi
+    powloka — te same bezpieczniki co w `_tmux_send`, bo powod jest ten sam:
+    tekst wpuszczony do basha staje sie poleceniem.
+
+    02.09: dolozone dla Gieni. `_tmux_send` celuje po zapisanym pane_id, wiec sesja
+    odpalona z reki (bez launchera, ktory pisze adresownik) byla dla dispatchera
+    niewidzialna — mimo ze stala w tmuxie obok."""
+    if not TMUX:
+        return None
+    try:
+        r = subprocess.run(
+            [TMUX, "list-panes", "-a", "-F",
+             "#{pane_id}\t#{pane_current_command}\t#{session_name}\t#{window_name}"],
+            capture_output=True, text=True, timeout=5)
+        if r.returncode != 0:
+            return None
+    except Exception as e:
+        log("tmux polowanie padlo:", repr(e))
+        return None
+
+    for linia in r.stdout.splitlines():
+        czesci = linia.split("\t")
+        if len(czesci) != 4:
+            continue
+        pane, proces, sesja, okno = czesci
+        if proces in POWLOKI:
+            continue
+        if not any(w in f"{sesja} {okno}".lower() for w in wzorce):
+            continue
+        try:
+            subprocess.run([TMUX, "send-keys", "-t", pane, "-l", "--", text],
+                           check=True, timeout=10)
+            time.sleep(0.15)
+            subprocess.run([TMUX, "send-keys", "-t", pane, "Enter"], check=True, timeout=5)
+            return f"polowanie -> tmux {pane} ({sesja}/{okno}, {proces})"
+        except Exception as e:
+            log(f"tmux polowanie {pane} padlo:", repr(e))
+    return None
+
+
 def _konsole_proces(svc, ses):
     """Co siedzi w karcie Konsole. Najpierw pytamy wprost o proces pierwszoplanowy;
     gdy ta metoda nie istnieje, czytamy tytuł ("~ : bash" → "bash"). Pusty wynik znaczy
@@ -298,8 +362,17 @@ def _konsole_send(name, text):
         log(f"konsole {name}: w karcie {ses} siedzi powłoka — ODMAWIAM (tekst byłby poleceniem)")
         return None
     try:
-        subprocess.run([QDBUS, svc, ses, "org.kde.konsole.Session.sendText", text + "\n"],
+        # ⚠️ TEKST I ENTER OSOBNO, a Enter to "\r" (CR), NIE "\n" (LF). Klawisz Enter
+        # w terminalu wysyła CR; LF doklejony do treści TUI (ink) bierze za nową linię
+        # w polu wpisywania i tura się nie wysyła. Objaw 2026-08-16: tekst z dyktafonu
+        # wchodzi, zatwierdzenia brak — wyszło dopiero, gdy padł tmux i trasa spadła
+        # na tę zapasową (przez tmuxa Enter szedł osobnym `send-keys`, czyli CR).
+        subprocess.run([QDBUS, svc, ses, "org.kde.konsole.Session.sendText", text],
                        check=True, timeout=10,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        time.sleep(0.15)  # TUI musi przetrawić wklejkę, zanim przyjmie zatwierdzenie
+        subprocess.run([QDBUS, svc, ses, "org.kde.konsole.Session.sendText", "\r"],
+                       check=True, timeout=5,
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         return f"{name} -> konsole dbus ({ses})"
     except Exception as e:
@@ -308,7 +381,7 @@ def _konsole_send(name, text):
 # `claude` zostaje ALIASEM na te sama trase — zeby stare wpisy, skrypty i nawyk
 # grruwiego dalej dzialaly. Nazwa wlasciwa to `klodzio` (tak nazywa sie na kibelku).
 ROUTES = {"voice": route_voice, "klodzio": route_klodzio, "claude": route_klodzio,
-          "clonker": route_clonker}
+          "clonker": route_clonker, "gieniara": route_gieniara}
 
 def _prawa():
     """Czyta prawa z dysku przy KAŻDEJ wiadomości — nowa osoba to wiersz w JSON-ie,
